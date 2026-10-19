@@ -1,51 +1,71 @@
-# plt_RequestAttachmentUrl
+# Custom actions
 
-A **legacy custom action** (a process of type Action, not a custom API). The plug-in supplies the
-whole implementation; the action itself exists only to define the message and its parameters, so it
-needs no steps in its own definition.
+Two **legacy custom actions** (processes of type Action, not custom APIs). They are global
+(unbound), so both take the record id as a string parameter.
 
-## Contract
+| Action | Implemented by | Mode |
+| --- | --- | --- |
+| `plt_RequestAttachmentUrl` | `RequestAttachmentUrlPlugin` | Synchronous plug-in, returns a URL |
+| `plt_DeleteBlobAttachment` | The **Delete Blob Attachment** flow | Asynchronous, no return value |
+
+## plt_RequestAttachmentUrl
 
 | Direction | Parameter | Type | Notes |
 | --- | --- | --- | --- |
-| Input | `Target` | EntityReference → `plt_blobattachment` | Present when the action is **bound** to the table. |
-| Input | `BlobAttachmentId` | String | Alternative for a **global** (unbound) action. A GUID. |
+| Input | `BlobAttachmentId` | String | The `plt_blobattachment` record id. |
+| Input | `Target` | EntityReference → `plt_blobattachment` | Accepted as an alternative if the action is defined bound. |
 | Output | `Url` | String | Absolute HTTPS URL with a read-only SAS token. |
 
-`RequestAttachmentUrlPlugin` accepts either input shape, so the action can be defined bound or
-global. Bound is the better default: the platform then validates the record reference and the
-caller cannot pass an id for an unrelated table.
+The `Url` output argument must exist on the action definition. Without it Dataverse returns
+`204 No Content` and the control has nothing to open.
 
-## Registration
+### Registration
 
 Register `PLT.BlobAttachments.Plugins.RequestAttachmentUrlPlugin` on the `plt_RequestAttachmentUrl`
 message, **PostOperation**, **synchronous**. The caller is waiting for the URL, so there is no
 asynchronous option here.
 
-Step configuration, as `name=value` pairs separated by `;` or newlines:
+**The step takes no configuration.** Leave both the unsecure and the secure configuration empty.
+Everything the plug-in needs comes from environment variables, which means a new environment is
+configured on the solution import screen rather than through the plug-in registration.
 
-| Configuration | Keys | Required |
+| Environment variable | Required | Notes |
 | --- | --- | --- |
-| Unsecure | `AccountName`, optionally `EndpointSuffix` or `BlobEndpoint` | `AccountName` yes |
-| Secure | `AccountKey` | yes |
+| `plt_StorageAccountName` | yes | e.g. `stemailattachmentsdev001`. |
+| `plt_StorageAccountKey` | yes | Base64 account key. |
+| `plt_ContainerName` | yes | Container holding the blobs. |
+| `plt_SasExpiryMinutes` | no | Defaults to 5, clamped to 1–60. |
+| `plt_BlobEndpoint` | no | Overrides the computed host entirely, for sovereign clouds or Azurite. |
 
-`EndpointSuffix` defaults to `core.windows.net`. `BlobEndpoint` overrides the computed host
-entirely, which is what you want against Azurite or a custom domain.
+`plt_StorageAccountKey` is a plain text environment variable, so anyone who can read environment
+variables can read the key. Use a storage account dedicated to attachments, and rotate the key if
+that is a concern.
 
-The secure configuration is not included in a solution export, so it has to be re-entered in every
-environment after import. A step whose configuration is missing or malformed fails at plug-in
-construction with a message naming the missing key.
+### What the plug-in does
 
-## What the plug-in does
-
-1. Reads the record id from `Target` or `BlobAttachmentId`.
-2. Retrieves `plt_blobpath` from the `plt_blobattachment` record **as the calling user**, so
+1. Reads the record id from `BlobAttachmentId` or `Target`.
+2. Reads `plt_ContainerName` from the environment variables.
+3. Retrieves `plt_blobpath` from the `plt_blobattachment` record **as the calling user**, so
    Dataverse row security governs who can get a URL. A missing or empty `plt_blobpath` is an error
-   ("not copied to blob storage yet"), not an empty result.
-3. Reads `plt_ContainerName` and `plt_SasExpiryMinutes` from environment variables, falling back to
-   each definition's default value. Expiry defaults to 5 minutes and is clamped to 1–60.
-4. Signs a service SAS locally with HMAC-SHA256 over the storage account key and returns the URL in
-   `Url`.
+   ("not copied to blob storage yet"), not an empty result. A leading `/` and a redundant container
+   prefix are both stripped, since the migrate flow has written the path in more than one shape.
+4. Reads the storage account name, key and optional endpoint, and the SAS lifetime.
+5. Signs a service SAS locally with HMAC-SHA256 over the storage account key and returns the URL in
+   `Url`. The URL itself is never traced: the signature in it grants read access to the blob.
+
+## plt_DeleteBlobAttachment
+
+| Direction | Parameter | Type | Notes |
+| --- | --- | --- | --- |
+| Input | `BlobAttachmentId` | String | The `plt_blobattachment` record id. |
+
+No output. The **Delete Blob Attachment** flow is triggered by *When an action is performed* on
+this message, reads `plt_blobpath` while the record still exists, deletes the blob and then deletes
+the record. The control polls the record until it disappears, because a flow started from this
+trigger runs asynchronously and cannot return anything to the caller.
+
+The action exists because the Dataverse *when a row is deleted* trigger carries only the deleted
+row's id, not its columns, so a flow on that trigger has no way to learn the blob path.
 
 ## The SAS
 

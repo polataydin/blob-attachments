@@ -1,30 +1,30 @@
 # PLT.BlobAttachmentViewer
 
-Scaffolded, not implemented. `pac pcf init --namespace PLT --name BlobAttachmentViewer
---template dataset --framework react` generated the project, and `HelloWorld.tsx`, `index.ts` and
-`ControlManifest.Input.xml` are untouched. This file records what the control is meant to do, so
-whoever picks it up is not reverse-engineering it from the README.
+A virtual React dataset control, bound to a subgrid of `plt_blobattachment` records related to the
+email on the form.
 
-## Intended behaviour
-
-A dataset control bound to a subgrid of `plt_blobattachment` records related to the email on the
-form.
+## Behaviour
 
 | Capability | Notes |
 | --- | --- |
-| List | File name, type icon, size, created on. |
-| Preview | PDFs and images inline, from the signed URL. Everything else gets a download. |
-| Download | Fetch the signed URL and hand the blob to the browser. |
-| Attach | Draft emails only. Upload to blob storage and create the pointer record. |
-| Delete | Draft emails only. Delete the pointer record; the delete flow removes the blob. |
+| List | Tiles with a file type icon, name and size. |
+| Preview | PDFs and images inline, from the signed URL. Everything else shows "No preview available" with a download button. |
+| Download | Fetches the signed URL and hands the blob to the browser with its original file name. |
+| Attach | Draft emails only. Creates `activitymimeattachment` rows; the migrate flow copies them to blob storage. |
+| Delete | Draft emails only. Calls `plt_DeleteBlobAttachment` and waits for the record to disappear. |
 
-Attach and delete are gated on the email still being a draft (`statecode`), matching how the stock
-attachment list behaves — a sent email is a record of what was sent and should not change.
+Attach and delete are gated on two things: the email is still a draft (`statuscode` 1), and the user
+has the matching privilege on `email`. A sent email is a record of what was sent and should not
+change, which is also how the stock attachment list behaves.
+
+Uploads are validated against the organization's own rules before anything is created: the blocked
+file extension list and the maximum file size from System Settings, both read from the
+`organization` table.
 
 ## Getting a URL
 
 ```ts
-const response = await context.webAPI.execute(/* plt_RequestAttachmentUrl, bound to the record */);
+const response = await context.webAPI.execute(/* plt_RequestAttachmentUrl, BlobAttachmentId */);
 const { Url } = await response.json();
 ```
 
@@ -32,21 +32,35 @@ Call it **per user action**, not per row on render. Each call signs a token vali
 (`plt_SasExpiryMinutes`, default 5), so URLs fetched up front will have expired by the time anyone
 clicks them — and signing URLs for rows nobody opens hands out access for no reason.
 
+If the response is `204 No Content`, the action definition is missing its `Url` output argument.
+
+## Deleting
+
+`plt_DeleteBlobAttachment` is served by a flow, and a flow started from the *when an action is
+performed* trigger cannot return anything to its caller. The control therefore polls the record
+once a second, up to ten times, and stops either when the record is gone or when the attempts run
+out. It never keeps polling indefinitely.
+
 ## Preview and CORS
 
 Inline preview fetches the blob from Azure directly, which is a cross-origin request from the
 Dynamics host. It needs a CORS rule on the blob service allowing `GET` from the Dynamics origin.
-**Download works without CORS and preview does not**, which makes a missing CORS rule look like a
-bug in the control.
+**Preview of an image or PDF in an iframe works without CORS, but the download button does not**,
+because it fetches the blob as a blob before saving it. A missing CORS rule therefore looks like a
+dead download button.
 
-The browser picks its renderer from the blob's stored `Content-Type`, set by the copy flow at
+The browser picks its renderer from the blob's stored `Content-Type`, set by the migrate flow at
 upload time. A blob stored as `application/octet-stream` downloads instead of previewing even for a
 PDF.
 
 ## Manifest
 
-Still the generated dataset manifest. It will need, at minimum, the dataset declared with the
-columns the list shows, and `WebAPI` in `feature-usage` so `context.webAPI.execute` is permitted.
+The dataset declares four bound columns — `fileName`, `mimeType`, `fileSize` and `blobPath` — and
+`feature-usage` declares `WebAPI` and `Utility`. `Utility` is required: without it,
+`context.utils.getEntityMetadata` throws and the privilege checks silently fall back to false,
+which hides the attach and delete affordances.
+
+`external-service-usage` lists `*.blob.core.windows.net`.
 
 ## Local development
 
@@ -57,5 +71,12 @@ npm run start:watch
 ```
 
 The harness runs against mock data with no environment, so the list layout can be built there. The
-custom action cannot be called from the harness — URL fetching needs a real environment, via
-`pac pcf push --publisher-prefix plt` or a solution import.
+custom actions cannot be called from the harness — URL fetching and deleting need a real
+environment, via `pac pcf push --publisher-prefix plt` or a solution import.
+
+Deploy code changes with `--incremental`; a full push is only needed when the manifest changes.
+
+```bash
+npm run build
+pac pcf push --publisher-prefix plt --incremental
+```

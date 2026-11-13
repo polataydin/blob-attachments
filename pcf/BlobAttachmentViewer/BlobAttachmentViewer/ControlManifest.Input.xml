@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <manifest>
-  <control namespace="PLT" constructor="BlobAttachmentViewer" version="1.0.19"
+  <control namespace="PLT" constructor="BlobAttachmentViewer" version="1.0.21"
            display-name-key="Blob Attachment Viewer"
            description-key="Lists email attachments stored in Azure Blob Storage and opens them via short-lived SAS URLs."
            control-type="virtual">
